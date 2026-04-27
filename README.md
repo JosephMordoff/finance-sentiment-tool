@@ -5,9 +5,6 @@ headlines for any stock ticker, runs each through **GPT-4o-mini** with
 equity-research-analyst prompt engineering, and surfaces sentiment scores,
 key risks, and professional summaries in a clean terminal-style UI.
 
-Built to demonstrate full-stack Python/AI skills for finance & tech internship
-applications.
-
 ---
 
 ## Features
@@ -30,7 +27,7 @@ finance-sentiment-tool/
 ├── app.py              # Main Streamlit application
 ├── requirements.txt    # Pinned Python dependencies
 ├── README.md           # This file
-└── .env                # 🔒 NOT committed — your API key lives here
+└── .env                # API key lives here
 ```
 
 ---
