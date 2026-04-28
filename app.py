@@ -1,5 +1,5 @@
 """
-Financial News Sentiment & Summarization Dashboard
+Financial News Market Sentiment 
 ====================================================
 A Streamlit application that fetches recent news headlines for a given
 stock ticker, analyzes sentiment using OpenAI GPT-4o-mini, and presents
@@ -12,15 +12,26 @@ Environment Variables:
     OPENAI_API_KEY: Your OpenAI API key (set in .env file)
 """
 
+# from curses import raw
 import time
 import json
 import os
+from unittest import result
 
+from altair import value
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 from openai import OpenAI
 from dotenv import load_dotenv
+
+from pydantic import BaseModel, Field
+from typing import List
+
+class SentimentResponse(BaseModel):
+    sentiment_score: float = Field(ge=-1, le=1)
+    key_risks: List[str] = Field(max_items=3)
+    summary: str = Field(max_length=200)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -225,6 +236,7 @@ Headline: \"{headline}\"
 
 Rules:
 - sentiment_score must reflect the likely near-term price impact on the underlying equity.
+- Base analysis ONLY on the headline. Do not infer unstated facts.
 - key_risks must be forward-looking and actionable.
 - summary must read like a sentence from a published research note.
 - Return ONLY the JSON object. No extra text."""
@@ -242,15 +254,24 @@ Rules:
     raw = response.choices[0].message.content.strip()
 
     try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Could not parse model response as JSON: {raw}") from exc
-
-    # Normalise: ensure key_risks is always a list
-    if isinstance(result.get("key_risks"), str):
-        result["key_risks"] = [result["key_risks"]]
-
+        parsed = SentimentResponse.model_validate_json(raw)
+        result = parsed.model_dump()
+    except Exception as exc:
+        raise ValueError(f"Invalid structured response: {raw}") from exc
+    
     return result
+
+def analyze_with_retry(headline: str, client: OpenAI, retries: int = 2) -> dict:
+    for _ in range(retries):
+        try:
+            return analyze_sentiment(headline, client)
+        except Exception:
+            continue
+    return {
+        "sentiment_score": 0,
+        "key_risks": [],
+        "summary": "Analysis failed."
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +381,20 @@ def render_headline_card(idx: int, item: dict, analysis: dict) -> None:
         title = item.get("title", "No title available")
 
     st.markdown(
-        f"""
-        <div class="headline-card">
-            <div class="headline-text">#{idx} &nbsp;|&nbsp; {title}</div>
-            <div class="summary-text">{analysis.get('summary', '—')}</div>
-            <div class="risk-list">{risks_html}</div>
+    f"""
+    <div class="headline-card">
+        <div class="headline-text">#{idx} &nbsp;|&nbsp; {title}</div>
+
+        <div class="summary-text">{analysis.get('summary', '—')}</div>
+
+        <div style="font-size:0.75rem; margin-top:0.5rem; color:#8b949e;">
+            Sentiment: <span class="{css}">{score:+.2f}</span>
         </div>
-        """,
-        unsafe_allow_html=True,
+
+        <div class="risk-list">{risks_html}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
     )
 
 
@@ -378,50 +405,64 @@ def main() -> None:
     """Entry point for the Streamlit dashboard."""
 
     # ── Header ──────────────────────────────────────────────────────────────
-    st.markdown(
-        "<h1 style='font-size:1.8rem; margin-bottom:0;'>📊 Equity Sentiment Desk</h1>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='color:#8b949e; font-size:0.85rem; margin-top:0.25rem;'>"
-        "AI-powered news sentiment analysis · powered by GPT-4o-mini</p>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("<hr>", unsafe_allow_html=True)
+    st.markdown("""
+<div style="
+    background:#161b22;
+    padding:1rem 1.5rem;
+    border:1px solid #21262d;
+    border-radius:8px;
+    margin-bottom:1.5rem;
+">
+    <div style="font-family:IBM Plex Mono; font-size:0.8rem; color:#e6edf3;">
+        EQUITY SENTIMENT TERMINAL
+    </div>
+    <div style="font-size:1.4rem; font-weight:600;">
+        AI News Sentiment Dashboard
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
     # ── Input row ────────────────────────────────────────────────────────────
-    col_input, col_btn, col_spacer = st.columns([3, 1, 4])
-    with col_input:
-        ticker = st.text_input(
-            "Ticker Symbol",
-            placeholder="e.g. AAPL, MSFT, NVDA",
-            label_visibility="collapsed",
-        )
-    with col_btn:
-        run = st.button("ANALYSE")
+    left, right = st.columns([1, 3])
 
+    with left:
+        st.markdown("### Controls")
+
+    ticker = st.text_input(
+        "Ticker",
+        placeholder="AAPL, MSFT, NVDA",
+    )
+
+    run = st.button("Run Analysis", use_container_width=True)
+
+    with right:
+        if "results_df" not in st.session_state:
+            st.session_state.results_df = pd.DataFrame()
     # ── Session state init ───────────────────────────────────────────────────
     if "results_df" not in st.session_state:
         st.session_state.results_df = pd.DataFrame()
 
     # ── Analysis pipeline ────────────────────────────────────────────────────
     if run:
+        ticker = ticker.upper().strip()
         if not ticker.strip():
             st.warning("Please enter a ticker symbol.")
             st.stop()
 
         try:
             client = get_openai_client()
+            news_items = fetch_news(ticker)
         except RuntimeError as exc:
             st.error(str(exc))
             st.stop()
 
-        with st.spinner(f"Fetching news for **{ticker.upper()}** …"):
-            try:
-                news_items = fetch_news(ticker)
-            except ValueError as exc:
-                st.error(str(exc))
-                st.stop()
+        placeholder = st.empty()
+
+        with placeholder.container():
+            st.info("Fetching and analyzing news...")
+
+        # after processing:
+        placeholder.empty()
 
         company = get_company_name(ticker)
         st.markdown(
@@ -431,6 +472,7 @@ def main() -> None:
 
         rows        = []
         analyses    = []
+        failures    = 0
         progress    = st.progress(0, text="Analysing headlines…")
 
         for i, item in enumerate(news_items):
@@ -439,8 +481,9 @@ def main() -> None:
             if not title:
                 title = item.get("title", "No title available")
             try:
-                result = analyze_sentiment(title, client)
+                result = analyze_with_retry(title, client)
             except (ValueError, Exception) as exc:
+                failures += 1
                 st.warning(f"Headline {i+1} skipped — {exc}")
                 result = {"sentiment_score": 0, "key_risks": [], "summary": "Analysis unavailable."}
 
@@ -453,11 +496,13 @@ def main() -> None:
                 "sentiment_label": score_label(result.get("sentiment_score", 0)),
                 "summary":         result.get("summary", ""),
                 "key_risks":       " | ".join(result.get("key_risks", [])),
+                "raw_response": json.dumps(result),
             })
             progress.progress((i + 1) / len(news_items), text=f"Analysed {i+1}/{len(news_items)}")
-            time.sleep(0.5)
 
         progress.empty()
+
+        st.caption(f"{len(news_items) - failures}/{len(news_items)} headlines successfully analysed")
 
         df = pd.DataFrame(rows)
         st.session_state.results_df = pd.concat(
@@ -468,25 +513,57 @@ def main() -> None:
         avg_score  = df["sentiment_score"].mean()
         max_score  = df["sentiment_score"].max()
         min_score  = df["sentiment_score"].min()
+        std_dev = df["sentiment_score"].std()
 
         st.markdown("<br>", unsafe_allow_html=True)
         m1, m2, m3 = st.columns(3)
 
         def metric_card(col, label, value, css_cls):
+            arrow = "▲" if value > 0 else "▼" if value < 0 else "•"
+    
             with col:
                 st.markdown(
-                    f"""<div class="metric-card">
-                        <div class="label">{label}</div>
-                        <div class="value {css_cls}">{value:+.2f}</div>
-                    </div>""",
-                    unsafe_allow_html=True,
+                f"""
+                <div class="metric-card">
+                    <div class="label">{label}</div>
+                    <div class="value {css_cls}">
+                        {arrow} {value:+.2f}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
                 )
 
         metric_card(m1, "Avg Sentiment Score",  avg_score,  score_css_class(avg_score))
         metric_card(m2, "Highest Score",         max_score,  score_css_class(max_score))
         metric_card(m3, "Lowest Score",          min_score,  score_css_class(min_score))
 
+        st.markdown("### Sentiment Distribution")
+        st.bar_chart(df["sentiment_score"])
+
+        st.markdown(
+        f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#8b949e;'>"
+        f"Sentiment dispersion (std dev): {std_dev:.2f}</p>",
+        unsafe_allow_html=True,)
+
         overall_label = score_label(avg_score)
+
+        insight_color = "#3fb950" if avg_score > 0 else "#f85149" if avg_score < 0 else "#d29922"
+
+        st.markdown(f"""
+        <div style="
+            background:#161b22;
+            border-left:4px solid {insight_color};
+            padding:1rem;
+            margin-top:1rem;
+            border-radius:6px;
+        ">
+            <b>Desk View:</b> Current news flow suggests a <b>{overall_label}</b> bias, 
+            with an average sentiment score of {avg_score:+.2f}. 
+            Dispersion indicates {'strong consensus' if std_dev < 0.2 else 'mixed signals'}.
+        </div>
+        """, unsafe_allow_html=True)
+
         overall_css   = score_css_class(avg_score)
         st.markdown(
             f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#8b949e;'>"
@@ -511,11 +588,10 @@ def main() -> None:
             "<h3 style='font-size:1rem; letter-spacing:0.08em;'>EXPORT SESSION DATA</h3>",
             unsafe_allow_html=True,
         )
-        st.dataframe(
-            st.session_state.results_df,
-            use_container_width=True,
-            hide_index=True,
-        )
+        
+        with st.expander("View Raw Data"):
+            st.dataframe(st.session_state.results_df, use_container_width=True)
+
         csv_bytes = st.session_state.results_df.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="⬇  Download CSV",
