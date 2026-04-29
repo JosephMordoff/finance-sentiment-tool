@@ -64,7 +64,7 @@ st.markdown(
     h1, h2, h3 { font-family: 'IBM Plex Mono', monospace; }
 
     .stButton > button {
-        background: linear-gradient(135deg, #1a8cff 0%, #0057b8 100%);
+        background: linear-gradient(135deg, #6001D2 0%, #4a00a8 100%);
         color: white;
         border: none;
         border-radius: 4px;
@@ -104,7 +104,7 @@ st.markdown(
     .headline-card {
         background: #161b22;
         border: 1px solid #21262d;
-        border-left: 3px solid #1a8cff;
+        border-left: 3px solid #6001D2;
         border-radius: 0 8px 8px 0;
         padding: 1rem 1.25rem;
         margin-bottom: 1rem;
@@ -141,18 +141,18 @@ st.markdown(
     }
 
     div[data-testid="stDownloadButton"] button {
-        background: #161b22 !important;
-        border: 1px solid #30363d !important;
-        color: #c9d1d9 !important;
+        background: #6001D2 !important;
+        border: 1px solid #4a00a8 !important;
+        color: #ffffff !important;
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
     }
 
     .ticker-badge {
         display: inline-block;
-        background: #1a8cff22;
-        border: 1px solid #1a8cff55;
-        color: #1a8cff;
+        background: #6001D222;
+        border: 1px solid #6001D255;
+        color: #6001D2;
         font-family: 'IBM Plex Mono', monospace;
         font-size: 0.75rem;
         padding: 0.2rem 0.6rem;
@@ -160,7 +160,11 @@ st.markdown(
         letter-spacing: 0.1em;
         margin-bottom: 1rem;
     }
-    hr { border-color: #21262d; }
+    hr { border-color: #7B2FBE; }
+
+    .stProgress > div > div > div > div {
+        background-color: #6001D2 !important;
+    }
 
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
@@ -357,45 +361,31 @@ def score_label(score: float) -> str:
 # UI helpers
 # ---------------------------------------------------------------------------
 def render_headline_card(idx: int, item: dict, analysis: dict) -> None:
-    """
-    Render a single headline + analysis card using custom HTML.
-
-    Parameters
-    ----------
-    idx : int
-        1-based card index for display purposes.
-    item : dict
-        Raw yfinance news item containing at least a 'title' key.
-    analysis : dict
-        Output of ``analyze_sentiment`` for this headline.
-    """
     score = analysis.get("sentiment_score", 0)
     css   = score_css_class(score)
-    label = score_label(score)
     risks = analysis.get("key_risks", [])
-    risks_html = "".join(f"<div>▸ {r}</div>" for r in risks)
+    risks_css = score_css_class(score)
+    risks_html = "".join(f'<div class="{risks_css}">▸ {r}</div>' for r in risks)
 
     content = item.get("content", {})
     title = content.get("title") if isinstance(content, dict) else None
     if not title:
         title = item.get("title", "No title available")
 
-    st.markdown(
-    f"""
-    <div class="headline-card">
-        <div class="headline-text">#{idx} &nbsp;|&nbsp; {title}</div>
+    # Sanitize title to prevent markdown parsing issues
+    title = title.replace("`", "'").replace("<", "&lt;").replace(">", "&gt;")
 
-        <div class="summary-text">{analysis.get('summary', '—')}</div>
-
-        <div style="font-size:0.75rem; margin-top:0.5rem; color:#8b949e;">
-            Sentiment: <span class="{css}">{score:+.2f}</span>
-        </div>
-
-        <div class="risk-list">{risks_html}</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+    html = (
+        '<div class="headline-card">'
+        f'<div class="headline-text">#{idx} &nbsp;|&nbsp; {title}</div>'
+        f'<div class="summary-text">{analysis.get("summary", "—")}</div>'
+        f'<div style="font-size:0.75rem; margin-top:0.5rem; color:#8b949e;">'
+        f'Sentiment: <span class="{css}">{score:+.2f}</span></div>'
+        f'<div class="risk-list">{risks_html}</div>'
+        '</div>'
     )
+
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +403,10 @@ def main() -> None:
     border-radius:8px;
     margin-bottom:1.5rem;
 ">
-    <div style="font-family:IBM Plex Mono; font-size:0.8rem; color:#e6edf3;">
+    <div style="font-family:IBM Plex Mono; font-size:0.8rem; color:#ffffff;">
         EQUITY SENTIMENT TERMINAL
     </div>
-    <div style="font-size:1.4rem; font-weight:600;">
+    <div style="font-size:1.4rem; color:#ffffff; font-weight:600;">
         AI News Sentiment Dashboard
     </div>
 </div>
@@ -539,10 +529,10 @@ def main() -> None:
         metric_card(m3, "Lowest Score",          min_score,  score_css_class(min_score))
 
         st.markdown("### Sentiment Distribution")
-        st.bar_chart(df["sentiment_score"])
+        st.bar_chart(df["sentiment_score"], color="#6001D2")
 
         st.markdown(
-        f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#8b949e;'>"
+        f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
         f"Sentiment dispersion (std dev): {std_dev:.2f}</p>",
         unsafe_allow_html=True,)
 
@@ -558,15 +548,15 @@ def main() -> None:
             margin-top:1rem;
             border-radius:6px;
         ">
-            <b>Desk View:</b> Current news flow suggests a <b>{overall_label}</b> bias, 
+            <b style="color:#ffffff;">Desk View:</b> <span style="color:#ffffff;">Current news flow suggests a <b>{overall_label}</b> bias, 
             with an average sentiment score of {avg_score:+.2f}. 
-            Dispersion indicates {'strong consensus' if std_dev < 0.2 else 'mixed signals'}.
+            Dispersion indicates {'strong consensus' if std_dev < 0.2 else 'mixed signals'}.</span>
         </div>
         """, unsafe_allow_html=True)
 
         overall_css   = score_css_class(avg_score)
         st.markdown(
-            f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#8b949e;'>"
+            f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
             f"Overall signal: <span class='{overall_css}'><b>{overall_label}</b></span>"
             f" &nbsp;(mean score {avg_score:+.2f})</p>",
             unsafe_allow_html=True,
