@@ -1,6 +1,6 @@
 # 📊 Financial News Sentiment & Summarization Dashboard
 
-A production-ready Streamlit dashboard that fetches the 5 most recent news
+A Streamlit dashboard that fetches the 5 most recent news
 headlines for any stock ticker, runs each through **GPT-4o-mini** with
 equity-research-analyst prompt engineering, and surfaces sentiment scores,
 key risks, and professional summaries in a clean terminal-style UI.
@@ -17,18 +17,6 @@ key risks, and professional summaries in a clean terminal-style UI.
 | **Risk extraction** | Up to 3 forward-looking risk factors per headline |
 | **Session export** | One-click CSV download of all analysed tickers |
 | **Rate-limit safe** | 500 ms sleep between API calls |
-
----
-
-## Project Structure
-
-```
-finance-sentiment-tool/
-├── app.py              # Main Streamlit application
-├── requirements.txt    # Pinned Python dependencies
-├── README.md           # This file
-└── .env                # API key lives here
-```
 
 ---
 
@@ -66,11 +54,6 @@ Create a file named **`.env`** in the project root:
 ```
 OPENAI_API_KEY=sk-proj-...your-key-here...
 ```
-
-> ⚠️ **Never commit your `.env` file.** Add it to `.gitignore`:
-> ```
-> echo ".env" >> .gitignore
-> ```
 
 ### 5. Run the dashboard
 
@@ -119,14 +102,6 @@ Goldman Sachs / Morgan Stanley published research note:
 
 ---
 
-## Extending the Project
-
-| Idea | How |
-|---|---|
-| Add a price chart | `yf.Ticker(t).history(period='1mo')` + `st.line_chart` |
-| Batch multiple tickers | Loop over a comma-separated input |
-| Persist results | Replace in-memory DataFrame with SQLite via `sqlite3` |
-| Deploy to the cloud | Push to [Streamlit Community Cloud](https://streamlit.io/cloud) — free tier available |
 
 ---
 
