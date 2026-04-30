@@ -412,173 +412,209 @@ def main() -> None:
 </div>
 """, unsafe_allow_html=True)
 
+    # ── Session state init ───────────────────────────────────────────────────
+    if "results_df" not in st.session_state:
+        st.session_state.results_df = pd.DataFrame()
+    if "analysis_data" not in st.session_state:
+        st.session_state.analysis_data = {}
+
     # ── Input row ────────────────────────────────────────────────────────────
-    left, right = st.columns([1, 3])
-
-    with left:
-        st.markdown("### Controls")
-
     ticker = st.text_input(
         "Ticker",
         placeholder="AAPL, MSFT, NVDA",
     )
-
     run = st.button("Run Analysis", use_container_width=True)
 
-    with right:
-        if "results_df" not in st.session_state:
-            st.session_state.results_df = pd.DataFrame()
-    # ── Session state init ───────────────────────────────────────────────────
-    if "results_df" not in st.session_state:
-        st.session_state.results_df = pd.DataFrame()
-
-    # ── Analysis pipeline ────────────────────────────────────────────────────
+    # ── Analysis pipeline (only runs when button is pressed) ─────────────────
     if run:
-        ticker = ticker.upper().strip()
-        if not ticker.strip():
+        raw_input = ticker.upper().strip()
+        if not raw_input:
             st.warning("Please enter a ticker symbol.")
             st.stop()
 
+        tickers = [t.strip() for t in raw_input.split(",") if t.strip()]
+
         try:
             client = get_openai_client()
-            news_items = fetch_news(ticker)
         except RuntimeError as exc:
             st.error(str(exc))
             st.stop()
 
-        placeholder = st.empty()
+        # Clear previous results
+        st.session_state.analysis_data = {}
+        st.session_state.results_df = pd.DataFrame()
 
-        with placeholder.container():
-            st.info("Fetching and analyzing news...")
-
-        # after processing:
-        placeholder.empty()
-
-        company = get_company_name(ticker)
-        st.markdown(
-            f"<div class='ticker-badge'>{ticker.upper()} · {company}</div>",
-            unsafe_allow_html=True,
-        )
-
-        rows        = []
-        analyses    = []
-        failures    = 0
-        progress    = st.progress(0, text="Analysing headlines…")
-
-        for i, item in enumerate(news_items):
-            content = item.get("content", {})
-            title = content.get("title") if isinstance(content, dict) else None
-            if not title:
-                title = item.get("title", "No title available")
+        def analyze_ticker(tick: str) -> tuple:
+            """Fetch news and analyze sentiment for a single ticker."""
             try:
-                result = analyze_with_retry(title, client)
-            except (ValueError, Exception) as exc:
-                failures += 1
-                st.warning(f"Headline {i+1} skipped — {exc}")
-                result = {"sentiment_score": 0, "key_risks": [], "summary": "Analysis unavailable."}
+                news_items = fetch_news(tick)
+            except ValueError as exc:
+                return tick, None, str(exc)
 
-            analyses.append(result)
-            rows.append({
-                "ticker":          ticker.upper(),
-                "company":         company,
-                "headline":        title,
-                "sentiment_score": result.get("sentiment_score", 0),
-                "sentiment_label": score_label(result.get("sentiment_score", 0)),
-                "summary":         result.get("summary", ""),
-                "key_risks":       " | ".join(result.get("key_risks", [])),
-                "raw_response": json.dumps(result),
-            })
-            progress.progress((i + 1) / len(news_items), text=f"Analysed {i+1}/{len(news_items)}")
+            company  = get_company_name(tick)
+            rows     = []
+            analyses = []
+            failures = 0
 
-        progress.empty()
+            for item in news_items:
+                content = item.get("content", {})
+                title = content.get("title") if isinstance(content, dict) else None
+                if not title:
+                    title = item.get("title", "No title available")
+                try:
+                    result = analyze_with_retry(title, client)
+                except (ValueError, Exception):
+                    failures += 1
+                    result = {"sentiment_score": 0, "key_risks": [], "summary": "Analysis unavailable."}
 
-        st.caption(f"{len(news_items) - failures}/{len(news_items)} headlines successfully analysed")
+                analyses.append(result)
+                rows.append({
+                    "ticker":          tick,
+                    "company":         company,
+                    "headline":        title,
+                    "sentiment_score": result.get("sentiment_score", 0),
+                    "sentiment_label": score_label(result.get("sentiment_score", 0)),
+                    "summary":         result.get("summary", ""),
+                    "key_risks":       " | ".join(result.get("key_risks", [])),
+                    "raw_response":    json.dumps(result),
+                })
 
-        df = pd.DataFrame(rows)
-        st.session_state.results_df = pd.concat(
-            [st.session_state.results_df, df], ignore_index=True
-        )
+            df = pd.DataFrame(rows)
+            return tick, {
+                "company":    company,
+                "news_items": news_items,
+                "analyses":   analyses,
+                "df":         df,
+                "failures":   failures,
+            }, None
 
-        # ── Summary metrics ──────────────────────────────────────────────────
-        avg_score  = df["sentiment_score"].mean()
-        max_score  = df["sentiment_score"].max()
-        min_score  = df["sentiment_score"].min()
-        std_dev = df["sentiment_score"].std()
+        with st.spinner(f"Analysing {len(tickers)} ticker(s) in parallel…"):
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(analyze_ticker, t): t for t in tickers}
+                for future in concurrent.futures.as_completed(futures):
+                    tick, data, error = future.result()
+                    if error:
+                        st.error(f"{tick}: {error}")
+                        continue
+                    st.session_state.analysis_data[tick] = data
+                    st.session_state.results_df = pd.concat(
+                        [st.session_state.results_df, data["df"]], ignore_index=True
+                    )
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        m1, m2, m3 = st.columns(3)
+    # ── Display (runs every rerun, reads from session state) ─────────────────
+    if st.session_state.analysis_data:
+        tickers = list(st.session_state.analysis_data.keys())
+        tabs = st.tabs([f"📊 {t}" for t in tickers])
 
-        def metric_card(col, label, value, css_cls):
-            arrow = "▲" if value > 0 else "▼" if value < 0 else "•"
-    
-            with col:
+        for tab, tick in zip(tabs, tickers):
+            data     = st.session_state.analysis_data[tick]
+            company  = data["company"]
+            news_items = data["news_items"]
+            analyses = data["analyses"]
+            df       = data["df"]
+            failures = data["failures"]
+
+            with tab:
                 st.markdown(
-                f"""
-                <div class="metric-card">
-                    <div class="label">{label}</div>
-                    <div class="value {css_cls}">
-                        {arrow} {value:+.2f}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+                    f"<div class='ticker-badge'>{tick} · {company}</div>",
+                    unsafe_allow_html=True,
                 )
 
-        metric_card(m1, "Avg Sentiment Score",  avg_score,  score_css_class(avg_score))
-        metric_card(m2, "Highest Score",         max_score,  score_css_class(max_score))
-        metric_card(m3, "Lowest Score",          min_score,  score_css_class(min_score))
+                # ── Price chart ──────────────────────────────────────────────
+                st.markdown(
+                    "<p style='font-family:IBM Plex Mono,monospace; font-size:0.75rem; "
+                    "color:#8b949e; margin-bottom:0.25rem;'>PRICE HISTORY</p>",
+                    unsafe_allow_html=True,
+                )
+                period = st.segmented_control(
+                    f"Period_{tick}",
+                    options=["1mo", "3mo", "6mo", "YTD", "1y", "2y", "5y", "Max"],
+                    default="1mo",
+                    label_visibility="collapsed",
+                )
+                hist = yf.Ticker(tick).history(period=period.lower())
+                if not hist.empty:
+                    st.line_chart(hist["Close"], color="#6001D2")
 
-        st.markdown("### Sentiment Distribution")
-        st.bar_chart(df["sentiment_score"], color="#6001D2")
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.caption(f"{len(news_items) - failures}/{len(news_items)} headlines successfully analysed")
 
-        st.markdown(
-        f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
-        f"Sentiment dispersion (std dev): {std_dev:.2f}</p>",
-        unsafe_allow_html=True,)
+                # ── Metrics ──────────────────────────────────────────────────
+                avg_score = df["sentiment_score"].mean()
+                max_score = df["sentiment_score"].max()
+                min_score = df["sentiment_score"].min()
+                std_dev   = df["sentiment_score"].std()
 
-        overall_label = score_label(avg_score)
+                st.markdown("<br>", unsafe_allow_html=True)
+                m1, m2, m3 = st.columns(3)
 
-        insight_color = "#3fb950" if avg_score > 0 else "#f85149" if avg_score < 0 else "#d29922"
+                def metric_card(col, label, value, css_cls):
+                    arrow = "▲" if value > 0 else "▼" if value < 0 else "•"
+                    with col:
+                        st.markdown(
+                            f"""<div class="metric-card">
+                                <div class="label">{label}</div>
+                                <div class="value {css_cls}">{arrow} {value:+.2f}</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
 
-        st.markdown(f"""
-        <div style="
-            background:#161b22;
-            border-left:4px solid {insight_color};
-            padding:1rem;
-            margin-top:1rem;
-            border-radius:6px;
-        ">
-            <b style="color:#ffffff;">Desk View:</b> <span style="color:#ffffff;">Current news flow suggests a <b>{overall_label}</b> bias, 
-            with an average sentiment score of {avg_score:+.2f}. 
-            Dispersion indicates {'strong consensus' if std_dev < 0.2 else 'mixed signals'}.</span>
-        </div>
-        """, unsafe_allow_html=True)
+                metric_card(m1, "Avg Sentiment Score", avg_score, score_css_class(avg_score))
+                metric_card(m2, "Highest Score",        max_score, score_css_class(max_score))
+                metric_card(m3, "Lowest Score",         min_score, score_css_class(min_score))
 
-        overall_css   = score_css_class(avg_score)
-        st.markdown(
-            f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
-            f"Overall signal: <span class='{overall_css}'><b>{overall_label}</b></span>"
-            f" &nbsp;(mean score {avg_score:+.2f})</p>",
-            unsafe_allow_html=True,
-        )
+                st.markdown("### Sentiment Distribution")
+                st.bar_chart(df["sentiment_score"], color="#6001D2")
 
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown(
-            "<h3 style='font-size:1rem; letter-spacing:0.08em;'>HEADLINE BREAKDOWN</h3>",
-            unsafe_allow_html=True,
-        )
+                st.markdown(
+                    f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
+                    f"Sentiment dispersion (std dev): {std_dev:.2f}</p>",
+                    unsafe_allow_html=True,
+                )
 
-        for idx, (item, analysis) in enumerate(zip(news_items, analyses), start=1):
-            render_headline_card(idx, item, analysis)
+                overall_label = score_label(avg_score)
+                insight_color = "#3fb950" if avg_score > 0 else "#f85149" if avg_score < 0 else "#d29922"
 
-    # ── Export panel (always visible once results exist) ─────────────────────
+                st.markdown(f"""
+                <div style="
+                    background:#161b22;
+                    border-left:4px solid {insight_color};
+                    padding:1rem;
+                    margin-top:1rem;
+                    border-radius:6px;
+                ">
+                    <b style="color:#ffffff;">Desk View:</b> <span style="color:#ffffff;">Current news flow suggests a <b>{overall_label}</b> bias,
+                    with an average sentiment score of {avg_score:+.2f}.
+                    Dispersion indicates {'strong consensus' if std_dev < 0.2 else 'mixed signals'}.</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                overall_css = score_css_class(avg_score)
+                st.markdown(
+                    f"<p style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; color:#6001D2;'>"
+                    f"Overall signal: <span class='{overall_css}'><b>{overall_label}</b></span>"
+                    f" &nbsp;(mean score {avg_score:+.2f})</p>",
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown("<hr>", unsafe_allow_html=True)
+                st.markdown(
+                    "<h3 style='font-size:1rem; letter-spacing:0.08em;'>HEADLINE BREAKDOWN</h3>",
+                    unsafe_allow_html=True,
+                )
+
+                for idx, (item, analysis) in enumerate(zip(news_items, analyses), start=1):
+                    render_headline_card(idx, item, analysis)
+
+    # ── Export panel ─────────────────────────────────────────────────────────
     if not st.session_state.results_df.empty:
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown(
             "<h3 style='font-size:1rem; letter-spacing:0.08em;'>EXPORT SESSION DATA</h3>",
             unsafe_allow_html=True,
         )
-        
+
         with st.expander("View Raw Data"):
             st.dataframe(st.session_state.results_df, use_container_width=True)
 
